@@ -238,9 +238,9 @@ const SYSTEM = `Ты — продуктовый дизайнер, который
 3. Строй структурно: фреймы с auto-layout (а не абсолютное позиционирование), осмысленные имена слоёв, переиспользуй существующие компоненты, стили и переменные файла, если они есть.
 4. Для создания и правок используй apply_design, а для сложных операций — eval_script (глобальный объект pixso, API совместим с Figma Plugin API; перед изменением текста вызывай await pixso.loadFontAsync(...); скрипт должен вернуть JSON-сериализуемый результат).
 5. Не удаляй и не меняй чужие слои без явной просьбы. Новые экраны размещай рядом с существующими, не поверх.
-6. После построения проверь результат: take_screenshot и/или check_layout, исправь заметные проблемы.
+6. Не делай скриншотов и не перепроверяй результат отдельными шагами: если вызов прошёл без ошибки — работа сделана. check_layout вызывай, только если пользователь просит проверить вёрстку.
 7. Для простых задач (создать фрейм, кнопку, поменять цвет) не исследуй файл подробно — сразу делай. Если инструмент чтения упал (таймаут, 504), не повторяй его — переходи к созданию или правке.
-8. Экономь шаги: объединяй правки в один вызов apply_design или eval_script вместо множества мелких, не запрашивай одни и те же данные повторно, скриншот — один в конце.
+8. Экономь шаги: объединяй правки в один вызов apply_design или eval_script вместо множества мелких, не запрашивай одни и те же данные повторно.
 9. В конце коротко опиши, что сделал.`;
 
 const READ_ONLY = /^(get_|read_|query_|fetch_|list_|load_|check_|take_)/;
@@ -411,7 +411,8 @@ $('gModel').addEventListener('change', () => lsSet('pg_gModel', $('gModel').valu
 
 
 // Инструменты «дизайн → код» и комментарии для вёрстки не нужны — не тратим на них токены
-const SKIP_TOOLS = new Set(['design_to_code', 'refine_generated_code', 'read_component_config_data', 'get_export_image', 'read_comments']);
+// Скриншоты тоже убраны: картинки дорого стоят в токенах, а результат ты и так видишь в Pixso
+const SKIP_TOOLS = new Set(['design_to_code', 'refine_generated_code', 'read_component_config_data', 'get_export_image', 'read_comments', 'take_screenshot', 'get_screenshot']);
 function geminiTools(){
   return [{functionDeclarations: mcpTools.filter(t => !SKIP_TOOLS.has(t.name)).map(t => ({
     name: t.name,
@@ -560,7 +561,6 @@ async function run(text){
         }
         const resp = {name:fc.name, response: ok ? {output: resText.slice(0, 20000)} : {error: resText.slice(0, 20000)}};
         if(fc.id) resp.id = fc.id;
-        if(images.length) resp.parts = images;
         out.push({functionResponse: resp});
       }
       history.push({role:'user', parts:out});

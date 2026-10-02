@@ -59,6 +59,18 @@ form#ask textarea{resize:vertical;min-height:64px}
 .switch input:focus-visible + .track{outline:2px solid var(--accent);outline-offset:2px}
 .switch input:disabled + .track{opacity:.4}
 .switch:has(input:disabled){cursor:default}
+.hint{margin:6px 0 0}
+a{color:var(--accent)}
+h2{font-size:13px;margin:22px 0 0;padding-top:16px;border-top:1px solid var(--line)}
+aside h2:first-of-type{border-top:0;padding-top:0;margin-top:4px}
+.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.fill{height:100%;width:0;background:var(--accent);transition:width .3s}
+.fill.warn{background:#e0a100}.fill.hot{background:var(--err)}
+.hint.bad{color:var(--err)}.hint.warn{color:#b07d00}.hint.ok{color:var(--ok)}
+details.guide{margin-top:10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
+details.guide summary{cursor:pointer;font-weight:600}
+details.guide ol{margin:8px 0;padding-left:18px}
+details.guide p{margin:6px 0 0;color:var(--muted)}
 @media (max-width:760px){body{flex-direction:column;height:auto}aside{width:auto;border-right:0;border-bottom:1px solid var(--line)}#log{min-height:50vh}}
 </style>
 </head>
@@ -67,53 +79,69 @@ form#ask textarea{resize:vertical;min-height:64px}
   <h1>Gemini → Pixso</h1>
   <p class="sub">Пишешь задачу — Gemini верстает в Pixso через MCP.</p>
 
-  <label>Gemini API key</label>
-  <input id="gKey" type="password" placeholder="AIza…">
-  <label>Модель</label>
-  <div class="row">
-    <input id="gModel" list="models" value="gemini-3.8-flash">
-    <button class="ghost" id="loadModels" style="flex:none">Список</button>
-  </div>
-  <datalist id="models"><option value="gemini-3.8-flash"><option value="gemini-3.1-pro-preview"></datalist>
+  <h2>1 · Gemini</h2>
+  <label for="gKey">API key (Google AI Studio)</label>
+  <input id="gKey" type="password" placeholder="AIza…" autocomplete="off">
+  <label for="gModel">Модель</label>
+  <select id="gModel" disabled><option value="">— сначала вставь ключ —</option></select>
+  <p class="hint" id="modelsStatus"></p>
+  <label>Использовано сегодня</label>
+  <div class="bar"><div class="fill" id="usageBar"></div></div>
+  <p class="hint" id="usageText"></p>
+  <p class="hint">Google не отдаёт остаток квоты по ключу, поэтому шкала считает запросы с этой страницы (сутки по тихоокеанскому времени, как у Google). Точные лимиты: <a href="https://aistudio.google.com/usage" target="_blank" rel="noopener">aistudio.google.com/usage</a></p>
 
-  <label>Pixso token</label>
-  <input id="pToken" type="password" placeholder="Личный токен из User Center">
+  <h2>2 · Pixso (pixso.net)</h2>
+  <details class="guide" id="pGuide" open>
+    <summary>Как подключить Pixso</summary>
+    <ol>
+      <li>В Pixso нажми на аватар справа → <b>User Center</b> → <b>Personal Access Token</b>.</li>
+      <li><b>Generate Token</b> и сразу скопируй: показывается только один раз.</li>
+      <li>Вставь токен ниже и нажми «Подключить».</li>
+    </ol>
+    <p>Нужно место <b>Full-function</b> или <b>Developer</b> и право редактирования файла. Работает только с pixso.net.</p>
+  </details>
+  <label for="pToken">Pixso token</label>
+  <input id="pToken" type="password" placeholder="Личный токен из User Center" autocomplete="off">
 
   <label class="switch">
     <input type="checkbox" id="useProxy">
     <span class="track"><span class="knob"></span></span>
     <span class="switch-label">Через прокси</span>
   </label>
-  <p class="hint" id="proxyHint" style="margin:4px 0 0"></p>
+  <p class="hint" id="proxyHint"></p>
 
-  <details class="cfg">
-    <summary>Дополнительно</summary>
-    <label>MCP URL</label>
-    <input id="pUrl" value="https://pixso.net/mcp">
-    <label>Заголовок для токена</label>
-    <select id="pHeader">
-      <option value="Token">Token: &lt;токен&gt;</option>
-      <option value="Authorization">Authorization: Bearer &lt;токен&gt;</option>
-    </select>
-    <label>Макс. шагов за запрос</label>
-    <input id="maxSteps" type="number" value="30" min="1" max="100">
-  </details>
-
-  <div style="margin-top:18px" class="row">
+  <div style="margin-top:14px" class="row">
     <button id="connect">Подключить</button>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">Не подключено</span></div>
   <div class="tools" id="toolsList"></div>
+
+  <h2>3 · Файл Pixso</h2>
+  <label for="link">Ссылка на фрейм, где работать</label>
+  <input id="link" placeholder="https://pixso.net/app/design/…?item-id=…" autocomplete="off">
+  <p class="hint" id="linkHint"></p>
+
+  <details class="cfg">
+    <summary>Дополнительно</summary>
+    <label for="pHeader">Заголовок для токена</label>
+    <select id="pHeader">
+      <option value="Token">Token: &lt;токен&gt;</option>
+      <option value="Authorization">Authorization: Bearer &lt;токен&gt;</option>
+    </select>
+    <label for="maxSteps">Макс. шагов за запрос</label>
+    <input id="maxSteps" type="number" value="30" min="1" max="100">
+    <label for="gLimit">Лимит запросов в день (для шкалы)</label>
+    <input id="gLimit" type="number" value="250" min="1">
+  </details>
   <p class="hint" style="margin-top:16px">Ключи хранятся только в этом браузере (localStorage).</p>
 </aside>
 
 <main>
-  <div id="log"><div class="empty" id="empty">Подключись слева, вставь ссылку на фрейм или файл и напиши, что сверстать.</div></div>
+  <div id="log"><div class="empty" id="empty">Вставь ключи слева, нажми «Подключить», укажи ссылку на фрейм Pixso и напиши, что сверстать.</div></div>
   <form id="ask">
     <div class="inner">
       <textarea id="prompt" placeholder="Например: сверстай экран логина для мобилки 390×844 — логотип, два поля, кнопка, ссылка «Забыли пароль». Всё на auto-layout."></textarea>
       <div class="askbar">
-        <input id="link" placeholder="Ссылка на слой/файл Pixso (необязательно)">
         <button type="button" class="ghost" id="reset">Новый чат</button>
         <button type="button" class="ghost" id="stop" disabled>Стоп</button>
         <button id="send" disabled>Отправить</button>
@@ -126,25 +154,44 @@ form#ask textarea{resize:vertical;min-height:64px}
 <script>
 const $ = id => document.getElementById(id);
 const IS_LOCAL = location.protocol.startsWith('http'); // страница открыта с сайта, где есть /api/mcp
-const FIELDS = ['gKey','gModel','pToken','pUrl','pHeader','maxSteps','link'];
-FIELDS.forEach(f => { try{ const v = localStorage.getItem('pg_'+f); if(v!==null) $(f).value = v; }catch(e){} });
-if($('gModel').value === 'gemini-2.5-pro') $('gModel').value = 'gemini-3.8-flash';
-if(/localhost|127\.0\.0\.1/.test($('pUrl').value)) $('pUrl').value = 'https://pixso.net/mcp';
-FIELDS.forEach(f => $(f).addEventListener('change', () => { try{ localStorage.setItem('pg_'+f, $(f).value); }catch(e){} }));
+const PIXSO_URL = 'https://pixso.net/mcp';
+const FIELDS = ['gKey','pToken','pHeader','maxSteps','link','gLimit'];
+const lsGet = k => { try{ return localStorage.getItem(k); }catch(e){ return null; } };
+const lsSet = (k,v) => { try{ localStorage.setItem(k,v); }catch(e){} };
+FIELDS.forEach(f => { const v = lsGet('pg_'+f); if(v!==null) $(f).value = v; });
+FIELDS.forEach(f => $(f).addEventListener('change', () => lsSet('pg_'+f, $(f).value)));
+if($('pToken').value) $('pGuide').open = false;
 
-// Тумблер прокси: работает, только когда страница открыта через pixso-gemini.js
+// Тумблер прокси: работает, только когда страница открыта с сайта (а не как файл)
 if(IS_LOCAL){
-  let saved = null; try{ saved = localStorage.getItem('pg_useProxy'); }catch(e){}
+  const saved = lsGet('pg_useProxy');
   $('useProxy').checked = saved === null ? true : saved === '1';
-  $('proxyHint').textContent = 'Запросы к Pixso идут через прокси сайта.';
+  $('proxyHint').textContent = $('useProxy').checked ? 'Запросы к Pixso идут через прокси сайта.' : 'Запросы к Pixso идут напрямую из браузера.';
 }else{
   $('useProxy').checked = false; $('useProxy').disabled = true;
   $('proxyHint').textContent = 'Недоступно: страница открыта как файл, а не с сайта.';
 }
 $('useProxy').addEventListener('change', () => {
-  try{ localStorage.setItem('pg_useProxy', $('useProxy').checked ? '1' : '0'); }catch(e){}
+  lsSet('pg_useProxy', $('useProxy').checked ? '1' : '0');
   $('proxyHint').textContent = $('useProxy').checked ? 'Запросы к Pixso идут через прокси сайта.' : 'Запросы к Pixso идут напрямую из браузера.';
 });
+
+// Ссылка на файл Pixso
+function parseLink(){
+  const raw = $('link').value.trim(), el = $('linkHint');
+  const say = (cls, t) => { el.className = 'hint ' + cls; el.textContent = t; };
+  if(!raw){ say('', 'Правый клик по фрейму в Pixso → Copy link. Все действия будут в этом файле.'); return null; }
+  let u; try{ u = new URL(raw); }catch(e){ say('bad', 'Это не ссылка.'); return null; }
+  if(!/(^|\.)pixso\.net$/.test(u.hostname)){ say('bad', 'Нужна ссылка с pixso.net.'); return null; }
+  const m = u.pathname.match(/\/app\/design\/([^/]+)/);
+  if(!m){ say('bad', 'Это не ссылка на файл с макетом (должна быть вида …/app/design/…).'); return null; }
+  const item = u.searchParams.get('item-id');
+  if(!item){ say('warn', 'В ссылке нет item-id. Лучше скопировать ссылку именно на фрейм: правый клик по слою → Copy link.'); return {raw, file:m[1], item:null}; }
+  say('ok', `Файл ${m[1]} · слой ${item}`);
+  return {raw, file:m[1], item};
+}
+$('link').addEventListener('input', parseLink);
+parseLink();
 
 const SYSTEM = `Ты — продуктовый дизайнер, который работает прямо в Pixso через инструменты MCP. Пользователь пишет по-русски, отвечай по-русски, кратко.
 
@@ -191,9 +238,9 @@ async function mcp(method, params = {}, notify = false){
   let res;
   const viaProxy = $('useProxy').checked;
   const headers = mcpHeaders();
-  if(viaProxy) headers['X-Pixso-Target'] = $('pUrl').value.trim();
+  if(viaProxy) headers['X-Pixso-Target'] = PIXSO_URL;
   try{
-    res = await fetch(viaProxy ? '/api/mcp' : $('pUrl').value.trim(), {method:'POST', headers, body:JSON.stringify(body), signal:abortCtl?.signal});
+    res = await fetch(viaProxy ? '/api/mcp' : PIXSO_URL, {method:'POST', headers, body:JSON.stringify(body), signal:abortCtl?.signal});
   }catch(e){
     if(e.name === 'AbortError') throw e;
     if(viaProxy) throw new Error('Прокси сайта не отвечает. Обнови страницу и попробуй ещё раз.');
@@ -232,15 +279,58 @@ function setStatus(kind, text){ $('dot').className = 'dot ' + kind; $('statusTex
 
 /* ---------- Gemini ---------- */
 const GAPI = 'https://generativelanguage.googleapis.com/v1beta';
-$('loadModels').onclick = async () => {
+let modelsTimer = null, modelsSeq = 0;
+function modelsStatus(cls, t){ $('modelsStatus').className = 'hint ' + cls; $('modelsStatus').textContent = t; }
+async function loadModels(){
+  const key = $('gKey').value.trim(), seq = ++modelsSeq, sel = $('gModel');
+  if(!key){ sel.innerHTML = '<option value="">— сначала вставь ключ —</option>'; sel.disabled = true; modelsStatus('', ''); return; }
+  modelsStatus('', 'Загружаю список моделей…');
   try{
-    const r = await fetch(`${GAPI}/models?pageSize=200`, {headers:{'x-goog-api-key':$('gKey').value.trim()}});
-    const j = await r.json(); if(j.error) throw new Error(j.error.message);
-    const names = (j.models||[]).filter(m => (m.supportedGenerationMethods||[]).includes('generateContent')).map(m => m.name.replace('models/',''));
-    $('models').innerHTML = names.map(n => `<option value="${n}">`).join('');
-    addMsg('assistant', 'Доступные модели:\n' + names.join('\n'));
-  }catch(e){ addMsg('err', 'Gemini: ' + e.message); }
-};
+    const all = []; let pageToken = '';
+    do{
+      const r = await fetch(`${GAPI}/models?pageSize=1000${pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''}`, {headers:{'x-goog-api-key':key}});
+      const j = await r.json().catch(() => ({error:{message:'Пустой ответ от Google'}}));
+      if(j.error) throw new Error(j.error.message);
+      all.push(...(j.models || [])); pageToken = j.nextPageToken || '';
+    }while(pageToken);
+    if(seq !== modelsSeq) return;
+    const skip = /tts|image|live|embed|aqa|transcribe|veo|imagen|omni|audio|robotics|computer-use|learnlm|gemma|translate/i;
+    const list = all.filter(m => (m.supportedGenerationMethods || []).includes('generateContent') && !skip.test(m.name))
+      .map(m => ({id:m.name.replace('models/',''), name:m.displayName || m.name.replace('models/','')}))
+      .sort((a,b) => b.id.localeCompare(a.id, 'en', {numeric:true}));
+    if(!list.length) throw new Error('Для этого ключа нет подходящих моделей.');
+    sel.innerHTML = ''; 
+    for(const m of list){ const o = document.createElement('option'); o.value = m.id; o.textContent = `${m.name} · ${m.id}`; sel.appendChild(o); }
+    const saved = lsGet('pg_gModel');
+    sel.value = list.some(m => m.id === saved) ? saved : list[0].id;
+    sel.disabled = false;
+    modelsStatus('ok', `Доступно моделей: ${list.length}`);
+  }catch(e){
+    if(seq !== modelsSeq) return;
+    sel.innerHTML = '<option value="">— нет списка —</option>'; sel.disabled = true;
+    modelsStatus('bad', e instanceof TypeError ? 'Не достучался до Google. Проверь, что в браузере включён XboxDNS.' : 'Gemini: ' + e.message);
+  }
+}
+$('gKey').addEventListener('input', () => { clearTimeout(modelsTimer); modelsTimer = setTimeout(loadModels, 600); });
+$('gModel').addEventListener('change', () => lsSet('pg_gModel', $('gModel').value));
+
+// Шкала: Google не отдаёт остаток квоты по ключу, считаем запросы страницы за сутки (по тихоокеанскому времени)
+const pacificDay = () => new Date().toLocaleDateString('en-CA', {timeZone:'America/Los_Angeles'});
+function usageGet(){
+  try{ const u = JSON.parse(lsGet('pg_usage') || 'null'); if(u && u.d === pacificDay()) return u; }catch(e){}
+  return {d:pacificDay(), req:0, tok:0};
+}
+function usageAdd(tok){ const u = usageGet(); u.req++; u.tok += tok || 0; lsSet('pg_usage', JSON.stringify(u)); renderUsage(); }
+function renderUsage(){
+  const u = usageGet(), lim = Math.max(1, +$('gLimit').value || 250), pct = Math.min(100, u.req / lim * 100);
+  $('usageBar').style.width = pct + '%';
+  $('usageBar').className = 'fill' + (pct >= 90 ? ' hot' : pct >= 70 ? ' warn' : '');
+  const t = u.tok >= 1000 ? (u.tok / 1000).toFixed(1) + 'k' : u.tok;
+  $('usageText').textContent = `${u.req} из ${lim} запросов · ${t} токенов`;
+}
+$('gLimit').addEventListener('input', renderUsage);
+renderUsage(); loadModels();
+
 function geminiTools(){
   return [{functionDeclarations: mcpTools.map(t => ({
     name: t.name,
@@ -248,14 +338,25 @@ function geminiTools(){
     parametersJsonSchema: t.inputSchema && Object.keys(t.inputSchema).length ? t.inputSchema : {type:'object', properties:{}}
   }))}];
 }
+function systemText(){
+  const f = parseLink();
+  if(!f) return SYSTEM;
+  return SYSTEM + `\n\nРабочий файл Pixso: ${f.raw}\nРаботай только в этом файле. ` +
+    (f.item ? `Слой item-id=${f.item} — целевой фрейм: результат размещай внутри него или рядом с ним. ` : 'В ссылке нет item-id: сначала вызови get_top_level_frames/fetch_context и выбери подходящее место. ') +
+    'В инструментах, где нужна ссылка или fileKey, передавай именно эту ссылку.';
+}
 async function gemini(){
   const r = await fetch(`${GAPI}/models/${encodeURIComponent($('gModel').value.trim())}:generateContent`, {
     method:'POST', signal:abortCtl.signal,
     headers:{'Content-Type':'application/json','x-goog-api-key':$('gKey').value.trim()},
-    body:JSON.stringify({systemInstruction:{parts:[{text:SYSTEM}]}, contents:history, tools:geminiTools()})
+    body:JSON.stringify({systemInstruction:{parts:[{text:systemText()}]}, contents:history, tools:geminiTools()})
   });
   const j = await r.json().catch(()=>({error:{message:'Пустой ответ (проверь доступ к Gemini/DNS)'}}));
-  if(j.error) throw new Error('Gemini: ' + j.error.message);
+  if(j.error){
+    if(j.error.code === 429) throw new Error('Gemini: квота или частота запросов исчерпана (429). Подожди минуту или выбери другую модель.\n' + j.error.message);
+    throw new Error('Gemini: ' + j.error.message);
+  }
+  usageAdd(j.usageMetadata?.totalTokenCount);
   const c = j.candidates?.[0];
   if(!c?.content) throw new Error('Gemini не вернул ответ' + (c?.finishReason ? ` (${c.finishReason})` : ''));
   return c.content;
@@ -263,8 +364,7 @@ async function gemini(){
 
 /* ---------- Agent loop ---------- */
 async function run(text){
-  const link = $('link').value.trim();
-  history.push({role:'user', parts:[{text: link ? `${text}\n\nСсылка Pixso: ${link}` : text}]});
+  history.push({role:'user', parts:[{text}]});
   stopFlag = false; abortCtl = new AbortController();
   $('send').disabled = true; $('stop').disabled = false;
   const max = +$('maxSteps').value || 30;
@@ -343,6 +443,8 @@ $('ask').onsubmit = e => {
   e.preventDefault();
   const t = $('prompt').value.trim(); if(!t || $('send').disabled) return;
   if(!$('gKey').value.trim()) return addMsg('err', 'Вставь Gemini API key.');
+  if(!$('gModel').value) return addMsg('err', 'Выбери модель Gemini (список появится после ввода рабочего ключа).');
+  if(!parseLink()) return addMsg('err', 'Укажи ссылку на фрейм Pixso слева (шаг 3): правый клик по фрейму → Copy link.');
   addMsg('user', t); $('prompt').value = ''; run(t);
 };
 $('prompt').addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('ask').requestSubmit(); });

@@ -63,9 +63,6 @@ form#ask textarea{resize:vertical;min-height:64px}
 a{color:var(--accent)}
 h2{font-size:13px;margin:22px 0 0;padding-top:16px;border-top:1px solid var(--line)}
 aside h2:first-of-type{border-top:0;padding-top:0;margin-top:4px}
-.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}
-.fill{height:100%;width:0;background:var(--accent);transition:width .3s}
-.fill.warn{background:#e0a100}.fill.hot{background:var(--err)}
 .hint.bad{color:var(--err)}.hint.warn{color:#b07d00}.hint.ok{color:var(--ok)}
 details.guide{margin-top:10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
 details.guide summary{cursor:pointer;font-weight:600}
@@ -85,10 +82,6 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
   <label for="gModel">Модель</label>
   <select id="gModel" disabled><option value="">— сначала вставь ключ —</option></select>
   <p class="hint" id="modelsStatus"></p>
-  <label>Использовано сегодня</label>
-  <div class="bar"><div class="fill" id="usageBar"></div></div>
-  <p class="hint" id="usageText"></p>
-  <p class="hint">Google не отдаёт остаток квоты по ключу, поэтому шкала считает запросы с этой страницы (сутки по тихоокеанскому времени, как у Google). Точные лимиты: <a href="https://aistudio.google.com/usage" target="_blank" rel="noopener">aistudio.google.com/usage</a></p>
 
   <h2>2 · Pixso (pixso.net)</h2>
   <details class="guide" id="pGuide" open>
@@ -116,9 +109,9 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">Не подключено</span></div>
   <div class="tools" id="toolsList"></div>
 
-  <h2>3 · Файл Pixso</h2>
-  <label for="link">Ссылка на фрейм, где работать</label>
-  <input id="link" placeholder="https://pixso.net/app/design/…?item-id=…" autocomplete="off">
+  <h2>3 · Где работать</h2>
+  <label for="link">Ссылка на файл или фрейм Pixso</label>
+  <input id="link" placeholder="https://pixso.net/app/design/…" autocomplete="off">
   <p class="hint" id="linkHint"></p>
 
   <details class="cfg">
@@ -130,14 +123,12 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
     </select>
     <label for="maxSteps">Макс. шагов за запрос</label>
     <input id="maxSteps" type="number" value="30" min="1" max="100">
-    <label for="gLimit">Лимит запросов в день (для шкалы)</label>
-    <input id="gLimit" type="number" value="250" min="1">
   </details>
   <p class="hint" style="margin-top:16px">Ключи хранятся только в этом браузере (localStorage).</p>
 </aside>
 
 <main>
-  <div id="log"><div class="empty" id="empty">Вставь ключи слева, нажми «Подключить», укажи ссылку на фрейм Pixso и напиши, что сверстать.</div></div>
+  <div id="log"><div class="empty" id="empty">Вставь ключи слева, нажми «Подключить», укажи, где работать, и напиши, что сверстать.</div></div>
   <form id="ask">
     <div class="inner">
       <textarea id="prompt" placeholder="Например: сверстай экран логина для мобилки 390×844 — логотип, два поля, кнопка, ссылка «Забыли пароль». Всё на auto-layout."></textarea>
@@ -146,7 +137,7 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
         <button type="button" class="ghost" id="stop" disabled>Стоп</button>
         <button id="send" disabled>Отправить</button>
       </div>
-      <div class="hint" style="margin-top:6px">Ctrl/⌘ + Enter — отправить</div>
+      <div class="hint" style="margin-top:6px">Ctrl/⌘ + Enter — отправить. Чтобы поработать с другим фреймом, вставь ссылку на него прямо в сообщение.</div>
     </div>
   </form>
 </main>
@@ -155,7 +146,7 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
 const $ = id => document.getElementById(id);
 const IS_LOCAL = location.protocol.startsWith('http'); // страница открыта с сайта, где есть /api/mcp
 const PIXSO_URL = 'https://pixso.net/mcp';
-const FIELDS = ['gKey','pToken','pHeader','maxSteps','link','gLimit'];
+const FIELDS = ['gKey','pToken','pHeader','maxSteps','link'];
 const lsGet = k => { try{ return localStorage.getItem(k); }catch(e){ return null; } };
 const lsSet = (k,v) => { try{ localStorage.setItem(k,v); }catch(e){} };
 FIELDS.forEach(f => { const v = lsGet('pg_'+f); if(v!==null) $(f).value = v; });
@@ -180,15 +171,15 @@ $('useProxy').addEventListener('change', () => {
 function parseLink(){
   const raw = $('link').value.trim(), el = $('linkHint');
   const say = (cls, t) => { el.className = 'hint ' + cls; el.textContent = t; };
-  if(!raw){ say('', 'Правый клик по фрейму в Pixso → Copy link. Все действия будут в этом файле.'); return null; }
+  if(!raw){ say('', 'Ссылка на файл — новые макеты появятся в нём. Ссылка на фрейм (правый клик по фрейму → Copy link) — Gemini будет работать с этим фреймом.'); return null; }
   let u; try{ u = new URL(raw); }catch(e){ say('bad', 'Это не ссылка.'); return null; }
   if(!/(^|\.)pixso\.net$/.test(u.hostname)){ say('bad', 'Нужна ссылка с pixso.net.'); return null; }
   const m = u.pathname.match(/\/app\/design\/([^/]+)/);
-  if(!m){ say('bad', 'Это не ссылка на файл с макетом (должна быть вида …/app/design/…).'); return null; }
-  const item = u.searchParams.get('item-id');
-  if(!item){ say('warn', 'В ссылке нет item-id. Лучше скопировать ссылку именно на фрейм: правый клик по слою → Copy link.'); return {raw, file:m[1], item:null}; }
-  say('ok', `Файл ${m[1]} · слой ${item}`);
-  return {raw, file:m[1], item};
+  if(!m){ say('bad', 'Это не ссылка на файл с макетом (должна быть вида pixso.net/app/design/…).'); return null; }
+  const item = u.searchParams.get('item-id'), page = u.searchParams.get('page-id');
+  if(item) say('ok', `Фрейм ${item}: Gemini будет менять его или собирать внутри него.`);
+  else say('ok', `Файл ${m[1]}: новые макеты появятся в нём${page ? ' на этой странице' : ''}, на свободном месте.`);
+  return {raw, file:m[1], item, page};
 }
 $('link').addEventListener('input', parseLink);
 parseLink();
@@ -314,22 +305,7 @@ async function loadModels(){
 $('gKey').addEventListener('input', () => { clearTimeout(modelsTimer); modelsTimer = setTimeout(loadModels, 600); });
 $('gModel').addEventListener('change', () => lsSet('pg_gModel', $('gModel').value));
 
-// Шкала: Google не отдаёт остаток квоты по ключу, считаем запросы страницы за сутки (по тихоокеанскому времени)
-const pacificDay = () => new Date().toLocaleDateString('en-CA', {timeZone:'America/Los_Angeles'});
-function usageGet(){
-  try{ const u = JSON.parse(lsGet('pg_usage') || 'null'); if(u && u.d === pacificDay()) return u; }catch(e){}
-  return {d:pacificDay(), req:0, tok:0};
-}
-function usageAdd(tok){ const u = usageGet(); u.req++; u.tok += tok || 0; lsSet('pg_usage', JSON.stringify(u)); renderUsage(); }
-function renderUsage(){
-  const u = usageGet(), lim = Math.max(1, +$('gLimit').value || 250), pct = Math.min(100, u.req / lim * 100);
-  $('usageBar').style.width = pct + '%';
-  $('usageBar').className = 'fill' + (pct >= 90 ? ' hot' : pct >= 70 ? ' warn' : '');
-  const t = u.tok >= 1000 ? (u.tok / 1000).toFixed(1) + 'k' : u.tok;
-  $('usageText').textContent = `${u.req} из ${lim} запросов · ${t} токенов`;
-}
-$('gLimit').addEventListener('input', renderUsage);
-renderUsage(); loadModels();
+
 
 function geminiTools(){
   return [{functionDeclarations: mcpTools.map(t => ({
@@ -341,9 +317,11 @@ function geminiTools(){
 function systemText(){
   const f = parseLink();
   if(!f) return SYSTEM;
-  return SYSTEM + `\n\nРабочий файл Pixso: ${f.raw}\nРаботай только в этом файле. ` +
-    (f.item ? `Слой item-id=${f.item} — целевой фрейм: результат размещай внутри него или рядом с ним. ` : 'В ссылке нет item-id: сначала вызови get_top_level_frames/fetch_context и выбери подходящее место. ') +
-    'В инструментах, где нужна ссылка или fileKey, передавай именно эту ссылку.';
+  const where = f.item
+    ? `Целевой фрейм: item-id=${f.item}. Если пользователь просит изменить — меняй этот фрейм. Если просит новое — собирай внутри него или рядом с ним.`
+    : `Целевого фрейма нет: новые макеты создавай в этом файле${f.page ? ` на странице page-id=${f.page}` : ''} на свободном месте, не перекрывая существующие фреймы (сначала посмотри get_top_level_frames).`;
+  return SYSTEM + `\n\nРабочий файл Pixso: ${f.raw}\nРаботай только в этом файле. ${where}\n` +
+    'Если пользователь вставил в сообщение другую ссылку на фрейм (item-id), работай с тем фреймом. В инструментах, где нужна ссылка или fileKey, передавай нужную ссылку.';
 }
 async function gemini(){
   const r = await fetch(`${GAPI}/models/${encodeURIComponent($('gModel').value.trim())}:generateContent`, {
@@ -356,7 +334,6 @@ async function gemini(){
     if(j.error.code === 429) throw new Error('Gemini: квота или частота запросов исчерпана (429). Подожди минуту или выбери другую модель.\n' + j.error.message);
     throw new Error('Gemini: ' + j.error.message);
   }
-  usageAdd(j.usageMetadata?.totalTokenCount);
   const c = j.candidates?.[0];
   if(!c?.content) throw new Error('Gemini не вернул ответ' + (c?.finishReason ? ` (${c.finishReason})` : ''));
   return c.content;
@@ -444,7 +421,7 @@ $('ask').onsubmit = e => {
   const t = $('prompt').value.trim(); if(!t || $('send').disabled) return;
   if(!$('gKey').value.trim()) return addMsg('err', 'Вставь Gemini API key.');
   if(!$('gModel').value) return addMsg('err', 'Выбери модель Gemini (список появится после ввода рабочего ключа).');
-  if(!parseLink()) return addMsg('err', 'Укажи ссылку на фрейм Pixso слева (шаг 3): правый клик по фрейму → Copy link.');
+  if(!parseLink()) return addMsg('err', 'Укажи слева (шаг 3), где работать: ссылку на файл или фрейм Pixso.');
   addMsg('user', t); $('prompt').value = ''; run(t);
 };
 $('prompt').addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('ask').requestSubmit(); });

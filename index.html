@@ -38,9 +38,13 @@ details.cfg summary{cursor:pointer;color:var(--muted);font-size:13px;margin-top:
 .msg.user .bubble{background:var(--accent);color:var(--accent-ink);margin-left:auto;width:fit-content;max-width:85%}
 .bubble{padding:10px 14px;border-radius:12px;background:var(--panel);border:1px solid var(--line);white-space:pre-wrap;word-wrap:break-word}
 .msg.user .bubble{border:0}
+.msg.note .bubble{color:var(--muted);font-size:13px;padding:6px 12px}
 .msg.err .bubble{border-color:var(--err);color:var(--err)}
 details.tool{background:var(--tool);border-radius:8px;padding:6px 10px;font-size:13px}
 details.tool summary{cursor:pointer;font-family:var(--mono)}
+details.tool pre.ev{color:var(--muted)}
+details.tool pre.ev:empty{display:none}
+details.tool .tm{color:var(--muted)}
 details.tool pre{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto;margin:6px 0 0}
 .shot{max-width:100%;border-radius:8px;border:1px solid var(--line);margin-top:6px}
 .empty{color:var(--muted);text-align:center;margin-top:12vh}
@@ -193,8 +197,11 @@ const SYSTEM = `Ты — продуктовый дизайнер, который
 4. Для создания и правок используй apply_design, а для сложных операций — eval_script (глобальный объект pixso, API совместим с Figma Plugin API; перед изменением текста вызывай await pixso.loadFontAsync(...); скрипт должен вернуть JSON-сериализуемый результат).
 5. Не удаляй и не меняй чужие слои без явной просьбы. Новые экраны размещай рядом с существующими, не поверх.
 6. После построения проверь результат: take_screenshot и/или check_layout, исправь заметные проблемы.
-7. В конце коротко опиши, что сделал.`;
+7. Для простых задач (создать фрейм, кнопку, поменять цвет) не исследуй файл подробно — сразу делай. Если инструмент чтения упал (таймаут, 504), не повторяй его — переходи к созданию или правке.
+8. В конце коротко опиши, что сделал.`;
 
+const READ_ONLY = /^(get_|read_|query_|fetch_|list_|load_|check_|take_)/;
+const TOOL_TIMEOUT = 240000; // мс; у прокси на Vercel предел 300 с
 let rpcId = 0, sessionId = null, protocolVersion = null, mcpTools = [], history = [], abortCtl = null, stopFlag = false;
 
 /* ---------- MCP over Streamable HTTP ---------- */
@@ -206,7 +213,38 @@ function mcpHeaders(){
   if(protocolVersion) h['MCP-Protocol-Version'] = protocolVersion;
   return h;
 }
-async function readSSE(res, wantId){
+function mcpPost(payload, signal){
+  const viaProxy = $('useProxy').checked;
+  const headers = mcpHeaders();
+  if(viaProxy) headers['X-Pixso-Target'] = PIXSO_URL;
+  return fetch(viaProxy ? '/api/mcp' : PIXSO_URL, {method:'POST', headers, body:JSON.stringify(payload), signal});
+}
+function describeEvent(msg){
+  if(msg.method === 'notifications/progress'){
+    const p = msg.params || {};
+    return `прогресс ${p.progress ?? '?'}${p.total ? '/' + p.total : ''}${p.message ? ' — ' + p.message : ''}`;
+  }
+  if(msg.method === 'notifications/message'){
+    const p = msg.params || {};
+    return `[${p.level || 'log'}] ${typeof p.data === 'string' ? p.data : JSON.stringify(p.data)}`.slice(0, 500);
+  }
+  return 'уведомление: ' + msg.method;
+}
+// Сервер может сам прислать запрос клиенту (например ping) — отвечаем, иначе он будет ждать вечно
+function answerServer(msg, onEvent){
+  onEvent?.('запрос от Pixso: ' + msg.method);
+  const reply = msg.method === 'ping' ? {jsonrpc:'2.0', id:msg.id, result:{}}
+    : {jsonrpc:'2.0', id:msg.id, error:{code:-32601, message:'Not supported by this client'}};
+  mcpPost(reply).catch(() => {});
+}
+function handleIncoming(msg, wantId, onEvent){
+  if(msg && msg.method && msg.id !== undefined && msg.id !== null){ answerServer(msg, onEvent); return null; }
+  if(msg && msg.method){ onEvent?.(describeEvent(msg)); return null; }
+  if(msg && String(msg.id) === String(wantId)) return msg;
+  onEvent?.('ответ с другим id: ' + JSON.stringify(msg).slice(0, 200));
+  return null;
+}
+async function readSSE(res, wantId, onEvent){
   const reader = res.body.getReader(), dec = new TextDecoder();
   let buf = '';
   while(true){
@@ -218,37 +256,59 @@ async function readSSE(res, wantId){
       const block = buf.slice(0, i); buf = buf.slice(i).replace(/^\r?\n\r?\n/, '');
       const data = block.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
       if(!data) continue;
-      try{ const msg = JSON.parse(data); if(msg.id === wantId){ reader.cancel().catch(()=>{}); return msg; } }catch(e){}
+      let parsed; try{ parsed = JSON.parse(data); }catch(e){ onEvent?.('сырые данные: ' + data.slice(0, 200)); continue; }
+      for(const m of Array.isArray(parsed) ? parsed : [parsed]){
+        const hit = handleIncoming(m, wantId, onEvent);
+        if(hit){ reader.cancel().catch(() => {}); return hit; }
+      }
     }
   }
-  throw new Error('Поток SSE закрылся без ответа');
+  throw new Error('Pixso закрыл соединение, так и не прислав ответ.');
 }
-async function mcp(method, params = {}, notify = false){
+async function mcp(method, params = {}, notify = false, opts = {}){
   const body = {jsonrpc:'2.0', method, params};
   if(!notify) body.id = ++rpcId;
-  let res;
-  const viaProxy = $('useProxy').checked;
-  const headers = mcpHeaders();
-  if(viaProxy) headers['X-Pixso-Target'] = PIXSO_URL;
+  const ctl = new AbortController();
+  const onStop = () => ctl.abort();
+  abortCtl?.signal.addEventListener('abort', onStop);
+  let timedOut = false;
+  const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; ctl.abort(); }, opts.timeoutMs) : null;
   try{
-    res = await fetch(viaProxy ? '/api/mcp' : PIXSO_URL, {method:'POST', headers, body:JSON.stringify(body), signal:abortCtl?.signal});
+    let res;
+    try{ res = await mcpPost(body, ctl.signal); }
+    catch(e){
+      if(e.name === 'AbortError') throw e;
+      if($('useProxy').checked) throw new Error('Прокси сайта не отвечает. Обнови страницу и попробуй ещё раз.');
+      throw new Error(IS_LOCAL
+        ? 'Pixso не пускает запросы напрямую из браузера (CORS). Включи тумблер «Через прокси».'
+        : 'Pixso не пускает запросы напрямую из браузера (CORS). Открой страницу с сайта на Vercel — там прокси встроен.');
+    }
+    const sid = res.headers.get('Mcp-Session-Id'); if(sid) sessionId = sid;
+    if(notify) return null;
+    if(!res.ok){
+      const t = await res.text().catch(() => '');
+      const gw = {502:'Bad Gateway', 503:'Service Unavailable', 504:'Gateway Time-out'}[res.status];
+      if(gw && /<html/i.test(t)) throw Object.assign(new Error(`Pixso MCP ${res.status} ${gw}: сервер Pixso не успел ответить.`), {transient:true});
+      throw new Error(`Pixso MCP ${res.status}: ${t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) || res.statusText}`);
+    }
+    const ct = res.headers.get('Content-Type') || '';
+    opts.onEvent?.(`соединение открыто (${ct.split(';')[0] || 'без типа'})`);
+    let msg;
+    if(ct.includes('text/event-stream')) msg = await readSSE(res, body.id, opts.onEvent);
+    else{
+      const j = await res.json();
+      for(const m of Array.isArray(j) ? j : [j]){ msg = handleIncoming(m, body.id, opts.onEvent) || msg; }
+      if(!msg) throw new Error('Pixso ответил, но не на этот запрос.');
+    }
+    if(msg.error) throw new Error(`MCP: ${msg.error.message || JSON.stringify(msg.error)}`);
+    return msg.result;
   }catch(e){
-    if(e.name === 'AbortError') throw e;
-    if(viaProxy) throw new Error('Прокси сайта не отвечает. Обнови страницу и попробуй ещё раз.');
-    throw new Error(IS_LOCAL
-      ? 'Pixso не пускает запросы напрямую из браузера (CORS). Включи тумблер «Через прокси».'
-      : 'Pixso не пускает запросы напрямую из браузера (CORS). Открой страницу с сайта на Vercel — там прокси встроен.');
+    if(timedOut) throw new Error(`Pixso не ответил за ${Math.round(opts.timeoutMs / 1000)} с.`);
+    throw e;
+  }finally{
+    clearTimeout(timer);
+    abortCtl?.signal.removeEventListener('abort', onStop);
   }
-  const sid = res.headers.get('Mcp-Session-Id'); if(sid) sessionId = sid;
-  if(notify) return null;
-  if(!res.ok){
-    const t = await res.text().catch(()=> '');
-    throw new Error(`Pixso MCP ${res.status}: ${t.slice(0,300) || res.statusText}`);
-  }
-  const ct = res.headers.get('Content-Type') || '';
-  const msg = ct.includes('text/event-stream') ? await readSSE(res, body.id) : await res.json();
-  if(msg.error) throw new Error(`MCP: ${msg.error.message || JSON.stringify(msg.error)}`);
-  return msg.result;
 }
 
 $('connect').onclick = async () => {
@@ -323,20 +383,36 @@ function systemText(){
   return SYSTEM + `\n\nРабочий файл Pixso: ${f.raw}\nРаботай только в этом файле. ${where}\n` +
     'Если пользователь вставил в сообщение другую ссылку на фрейм (item-id), работай с тем фреймом. В инструментах, где нужна ссылка или fileKey, передавай нужную ссылку.';
 }
+const sleep = (ms, signal) => new Promise((res, rej) => {
+  const t = setTimeout(res, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Aborted', 'AbortError')); }, {once:true});
+});
 async function gemini(){
-  const r = await fetch(`${GAPI}/models/${encodeURIComponent($('gModel').value.trim())}:generateContent`, {
-    method:'POST', signal:abortCtl.signal,
-    headers:{'Content-Type':'application/json','x-goog-api-key':$('gKey').value.trim()},
-    body:JSON.stringify({systemInstruction:{parts:[{text:systemText()}]}, contents:history, tools:geminiTools()})
-  });
-  const j = await r.json().catch(()=>({error:{message:'Пустой ответ (проверь доступ к Gemini/DNS)'}}));
-  if(j.error){
-    if(j.error.code === 429) throw new Error('Gemini: квота или частота запросов исчерпана (429). Подожди минуту или выбери другую модель.\n' + j.error.message);
-    throw new Error('Gemini: ' + j.error.message);
+  const waits = [3, 8, 15]; // секунды между повторами, если модель перегружена
+  for(let attempt = 0; ; attempt++){
+    const r = await fetch(`${GAPI}/models/${encodeURIComponent($('gModel').value.trim())}:generateContent`, {
+      method:'POST', signal:abortCtl.signal,
+      headers:{'Content-Type':'application/json','x-goog-api-key':$('gKey').value.trim()},
+      body:JSON.stringify({systemInstruction:{parts:[{text:systemText()}]}, contents:history, tools:geminiTools()})
+    });
+    const j = await r.json().catch(() => ({error:{code:r.status, message:'Пустой ответ (проверь доступ к Gemini/DNS)'}}));
+    if(j.error){
+      const code = j.error.code || r.status;
+      const overloaded = code === 503 || code === 500 || j.error.status === 'UNAVAILABLE' || /high demand|overloaded/i.test(j.error.message || '');
+      if(overloaded && attempt < waits.length){
+        const note = addMsg('assistant', `Gemini перегружена, повторяю через ${waits[attempt]} с (попытка ${attempt + 2} из ${waits.length + 1})…`);
+        note.classList.add('note');
+        await sleep(waits[attempt] * 1000, abortCtl.signal);
+        continue;
+      }
+      if(overloaded) throw new Error('Gemini: модель сейчас перегружена и не ответила после нескольких попыток. Выбери другую модель слева и напиши «продолжай».');
+      if(code === 429) throw new Error('Gemini: квота или частота запросов исчерпана (429). Подожди минуту или выбери другую модель.\n' + j.error.message);
+      throw new Error('Gemini: ' + j.error.message);
+    }
+    const c = j.candidates?.[0];
+    if(!c?.content) throw new Error('Gemini не вернул ответ' + (c?.finishReason ? ` (${c.finishReason})` : ''));
+    return c.content;
   }
-  const c = j.candidates?.[0];
-  if(!c?.content) throw new Error('Gemini не вернул ответ' + (c?.finishReason ? ` (${c.finishReason})` : ''));
-  return c.content;
 }
 
 /* ---------- Agent loop ---------- */
@@ -362,7 +438,15 @@ async function run(text){
         let resText, ok = true;
         const images = [];
         try{
-          const r = await mcp('tools/call', {name:fc.name, arguments:fc.args || {}});
+          const call = () => mcp('tools/call', {name:fc.name, arguments:fc.args || {}, _meta:{progressToken:'t' + (rpcId + 1)}}, false, {timeoutMs:TOOL_TIMEOUT, onEvent:t => logEvent(el, t)});
+          let r;
+          try{ r = await call(); }
+          catch(e){
+            // Чтение безопасно повторить; запись — нет (могла уже выполниться)
+            if(!e.transient || !READ_ONLY.test(fc.name)) throw e;
+            logEvent(el, e.message + ' Повторяю один раз…');
+            r = await call();
+          }
           const texts = [];
           for(const c of r.content || []){
             if(c.type === 'text') texts.push(c.text);
@@ -374,7 +458,7 @@ async function run(text){
           ok = !r.isError;
           finishTool(el, resText, ok);
         }catch(e){
-          if(e.name === 'AbortError') throw e;
+          if(e.name === 'AbortError'){ finishTool(el, 'Остановлено', false); throw e; }
           resText = e.message; ok = false; finishTool(el, resText, false);
         }
         const resp = {name:fc.name, response: ok ? {output: resText.slice(0, 40000)} : {error: resText.slice(0, 40000)}};
@@ -403,12 +487,20 @@ function addMsg(kind, text){
 function addTool(name, args){
   $('empty')?.remove();
   const d = document.createElement('div'); d.className = 'msg';
-  d.innerHTML = `<details class="tool"><summary>⏳ ${name}</summary><pre class="a"></pre><pre class="r"></pre></details>`;
+  d.innerHTML = `<details class="tool"><summary><span class="st">⏳</span> <span class="nm"></span> <span class="tm"></span></summary><pre class="a"></pre><pre class="ev"></pre><pre class="r"></pre></details>`;
+  d.querySelector('.nm').textContent = name;
   d.querySelector('.a').textContent = '→ ' + JSON.stringify(args || {}, null, 2);
+  const t0 = Date.now();
+  d._timer = setInterval(() => { d.querySelector('.tm').textContent = `· ${Math.round((Date.now() - t0) / 1000)} с`; }, 1000);
   $('log').appendChild(d); $('log').scrollTop = 1e9; return d;
 }
+function logEvent(el, text){
+  const ev = el.querySelector('.ev');
+  ev.textContent += (ev.textContent ? '\n' : '') + '• ' + text;
+}
 function finishTool(el, text, ok){
-  el.querySelector('summary').textContent = (ok ? '✓ ' : '✕ ') + el.querySelector('summary').textContent.slice(2);
+  clearInterval(el._timer);
+  el.querySelector('.st').textContent = ok ? '✓' : '✕';
   el.querySelector('.r').textContent = '← ' + text.slice(0, 6000);
 }
 function showShot(el, c){

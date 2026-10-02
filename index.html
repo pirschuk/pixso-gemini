@@ -240,7 +240,8 @@ const SYSTEM = `Ты — продуктовый дизайнер, который
 5. Не удаляй и не меняй чужие слои без явной просьбы. Новые экраны размещай рядом с существующими, не поверх.
 6. После построения проверь результат: take_screenshot и/или check_layout, исправь заметные проблемы.
 7. Для простых задач (создать фрейм, кнопку, поменять цвет) не исследуй файл подробно — сразу делай. Если инструмент чтения упал (таймаут, 504), не повторяй его — переходи к созданию или правке.
-8. В конце коротко опиши, что сделал.`;
+8. Экономь шаги: объединяй правки в один вызов apply_design или eval_script вместо множества мелких, не запрашивай одни и те же данные повторно, скриншот — один в конце.
+9. В конце коротко опиши, что сделал.`;
 
 const READ_ONLY = /^(get_|read_|query_|fetch_|list_|load_|check_|take_)/;
 const TOOL_TIMEOUT = 240000; // мс; у прокси на Vercel предел 300 с
@@ -409,10 +410,12 @@ $('gModel').addEventListener('change', () => lsSet('pg_gModel', $('gModel').valu
 
 
 
+// Инструменты «дизайн → код» и комментарии для вёрстки не нужны — не тратим на них токены
+const SKIP_TOOLS = new Set(['design_to_code', 'refine_generated_code', 'read_component_config_data', 'get_export_image', 'read_comments']);
 function geminiTools(){
-  return [{functionDeclarations: mcpTools.map(t => ({
+  return [{functionDeclarations: mcpTools.filter(t => !SKIP_TOOLS.has(t.name)).map(t => ({
     name: t.name,
-    description: (t.description || '').slice(0, 4000),
+    description: (t.description || '').slice(0, 1500),
     parametersJsonSchema: t.inputSchema && Object.keys(t.inputSchema).length ? t.inputSchema : {type:'object', properties:{}}
   }))}];
 }
@@ -434,17 +437,48 @@ function systemText(){
   return SYSTEM + `\n\nРабочий файл Pixso: ${f.raw}\nРаботай только в этом файле. ${where}\n` +
     'Если пользователь вставил в сообщение другую ссылку на фрейм (item-id), работай с тем фреймом. В инструментах, где нужна ссылка или fileKey, передавай нужную ссылку.' + dsBlock();
 }
+// Полные ответы инструментов и скриншоты отправляем только за последние шаги, старые — сокращаем
+const KEEP_FULL = 4;      // последних записей истории (~2 шага агента)
+const OLD_RESULT = 1500;  // символов от старого ответа инструмента
+function compactHistory(){
+  const cut = history.length - KEEP_FULL;
+  return history.map((h, i) => {
+    if(i >= cut || h.role !== 'user' || !h.parts.some(p => p.functionResponse)) return h;
+    return {role:'user', parts:h.parts.map(p => {
+      if(!p.functionResponse) return p;
+      const fr = p.functionResponse, resp = {};
+      for(const [k, v] of Object.entries(fr.response || {})){
+        const t = typeof v === 'string' ? v : JSON.stringify(v);
+        resp[k] = t.length > OLD_RESULT ? t.slice(0, OLD_RESULT) + '… [сокращено]' : v;
+      }
+      if(fr.parts?.length) resp.note = '[скриншот был показан раньше]';
+      const out = {name:fr.name, response:resp}; if(fr.id) out.id = fr.id;
+      return {functionResponse:out};
+    })};
+  });
+}
+// Из ответа 429: через сколько повторить и не дневной ли это лимит
+function quotaInfo(err){
+  const det = err.details || [];
+  const retry = det.find(d => (d['@type'] || '').includes('RetryInfo'))?.retryDelay;
+  let sec = retry ? parseFloat(retry) : NaN;
+  if(isNaN(sec)){ const m = (err.message || '').match(/retry in ([\d.]+)s/i); sec = m ? parseFloat(m[1]) : 30; }
+  const ids = det.flatMap(d => d.violations || []).map(v => (v.quotaId || '') + ' ' + (v.quotaMetric || '')).join(' ') + ' ' + (err.message || '');
+  return {sec:Math.ceil(sec) + 1, daily:/per_?day|PerDay/i.test(ids)};
+}
+let runStats = null;
 const sleep = (ms, signal) => new Promise((res, rej) => {
   const t = setTimeout(res, ms);
   signal?.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Aborted', 'AbortError')); }, {once:true});
 });
 async function gemini(){
   const waits = [3, 8, 15]; // секунды между повторами, если модель перегружена
+  let quotaWaits = 0;
   for(let attempt = 0; ; attempt++){
     const r = await fetch(`${GAPI}/models/${encodeURIComponent($('gModel').value.trim())}:generateContent`, {
       method:'POST', signal:abortCtl.signal,
       headers:{'Content-Type':'application/json','x-goog-api-key':$('gKey').value.trim()},
-      body:JSON.stringify({systemInstruction:{parts:[{text:systemText()}]}, contents:history, tools:geminiTools()})
+      body:JSON.stringify({systemInstruction:{parts:[{text:systemText()}]}, contents:compactHistory(), tools:geminiTools()})
     });
     const j = await r.json().catch(() => ({error:{code:r.status, message:'Пустой ответ (проверь доступ к Gemini/DNS)'}}));
     if(j.error){
@@ -457,9 +491,21 @@ async function gemini(){
         continue;
       }
       if(overloaded) throw new Error('Gemini: модель сейчас перегружена и не ответила после нескольких попыток. Выбери другую модель слева и напиши «продолжай».');
-      if(code === 429) throw new Error('Gemini: квота или частота запросов исчерпана (429). Подожди минуту или выбери другую модель.\n' + j.error.message);
+      if(code === 429){
+        const q = quotaInfo(j.error), model = $('gModel').value;
+        if(q.daily) throw new Error(`Gemini: дневная квота модели ${model} на бесплатном тарифе закончилась. Выбери другую модель слева — у каждой своя квота — и напиши «продолжай».`);
+        if(quotaWaits < 4){
+          quotaWaits++;
+          const note = addMsg('assistant', `Поминутный лимит Gemini (${model}) — жду ${q.sec} с и продолжаю…`);
+          note.classList.add('note');
+          await sleep(q.sec * 1000, abortCtl.signal);
+          attempt--; continue;
+        }
+        throw new Error(`Gemini: поминутный лимит модели ${model} упирается слишком часто. Подожди пару минут или выбери другую модель и напиши «продолжай».`);
+      }
       throw new Error('Gemini: ' + j.error.message);
     }
+    if(runStats){ runStats.steps++; runStats.input += j.usageMetadata?.promptTokenCount || 0; }
     const c = j.candidates?.[0];
     if(!c?.content) throw new Error('Gemini не вернул ответ' + (c?.finishReason ? ` (${c.finishReason})` : ''));
     return c.content;
@@ -469,7 +515,7 @@ async function gemini(){
 /* ---------- Agent loop ---------- */
 async function run(text){
   history.push({role:'user', parts:[{text}]});
-  stopFlag = false; abortCtl = new AbortController();
+  stopFlag = false; abortCtl = new AbortController(); runStats = {steps:0, input:0};
   $('send').disabled = true; $('stop').disabled = false;
   const max = +$('maxSteps').value || 30;
   try{
@@ -512,7 +558,7 @@ async function run(text){
           if(e.name === 'AbortError'){ finishTool(el, 'Остановлено', false); throw e; }
           resText = e.message; ok = false; finishTool(el, resText, false);
         }
-        const resp = {name:fc.name, response: ok ? {output: resText.slice(0, 40000)} : {error: resText.slice(0, 40000)}};
+        const resp = {name:fc.name, response: ok ? {output: resText.slice(0, 20000)} : {error: resText.slice(0, 20000)}};
         if(fc.id) resp.id = fc.id;
         if(images.length) resp.parts = images;
         out.push({functionResponse: resp});
@@ -524,6 +570,11 @@ async function run(text){
     if(e.name !== 'AbortError') addMsg('err', e.message);
   }finally{
     if(stopFlag) addMsg('assistant', 'Остановлено.');
+    if(runStats?.steps){
+      const k = n => n >= 1000 ? Math.round(n / 1000) + 'k' : n;
+      addMsg('assistant', `Шагов Gemini: ${runStats.steps} · входных токенов: ${k(runStats.input)}`).classList.add('note');
+    }
+    runStats = null;
     $('send').disabled = false; $('stop').disabled = true; abortCtl = null;
   }
 }

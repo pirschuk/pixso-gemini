@@ -66,6 +66,8 @@ form#ask textarea{resize:vertical;min-height:64px}
 .hint{margin:6px 0 0}
 a{color:var(--accent)}
 h2{font-size:13px;margin:22px 0 0;padding-top:16px;border-top:1px solid var(--line)}
+aside textarea{resize:vertical;font-size:13px;line-height:1.45}
+button.small{padding:6px 10px;font-size:13px;white-space:nowrap}
 aside h2:first-of-type{border-top:0;padding-top:0;margin-top:4px}
 .hint.bad{color:var(--err)}.hint.warn{color:#b07d00}.hint.ok{color:var(--ok)}
 details.guide{margin-top:10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
@@ -118,6 +120,22 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
   <input id="link" placeholder="https://pixso.net/app/design/…" autocomplete="off">
   <p class="hint" id="linkHint"></p>
 
+  <h2>4 · Дизайн-система и стиль</h2>
+  <label for="ds">Описание (необязательно)</label>
+  <textarea id="ds" rows="7" placeholder="Например:
+Сетка 8 pt, отступы 8/16/24/32.
+Цвета: primary #3B5BFD, текст #1B1B1A, фон #F6F6F4.
+Шрифт Inter: H1 32/40 Bold, body 16/24 Regular.
+Кнопки: высота 48, радиус 12, текст 16 Medium.
+Карточки: радиус 16, тень 0 4 16 rgba(0,0,0,.08).
+Стиль: спокойный минимализм, много воздуха."></textarea>
+  <div class="row" style="margin-top:6px">
+    <button type="button" class="ghost small" id="dsLoad">Из файла…</button>
+    <button type="button" class="ghost small" id="dsClear">Очистить</button>
+  </div>
+  <input type="file" id="dsFile" accept=".md,.txt,.json,.css,.yaml,.yml,text/*" hidden>
+  <p class="hint" id="dsHint"></p>
+
   <details class="cfg">
     <summary>Дополнительно</summary>
     <label for="pHeader">Заголовок для токена</label>
@@ -150,7 +168,7 @@ details.guide p{margin:6px 0 0;color:var(--muted)}
 const $ = id => document.getElementById(id);
 const IS_LOCAL = location.protocol.startsWith('http'); // страница открыта с сайта, где есть /api/mcp
 const PIXSO_URL = 'https://pixso.net/mcp';
-const FIELDS = ['gKey','pToken','pHeader','maxSteps','link'];
+const FIELDS = ['gKey','pToken','pHeader','maxSteps','link','ds'];
 const lsGet = k => { try{ return localStorage.getItem(k); }catch(e){ return null; } };
 const lsSet = (k,v) => { try{ localStorage.setItem(k,v); }catch(e){} };
 FIELDS.forEach(f => { const v = lsGet('pg_'+f); if(v!==null) $(f).value = v; });
@@ -187,6 +205,30 @@ function parseLink(){
 }
 $('link').addEventListener('input', parseLink);
 parseLink();
+
+// Дизайн-система / стиль: уходит в инструкции Gemini с каждым запросом
+const DS_LIMIT = 60000;
+function dsUpdate(){
+  const n = $('ds').value.trim().length, el = $('dsHint');
+  if(!n){ el.className = 'hint'; el.textContent = 'Паттерны, токены, правила или просто описание стиля. Можно вставить текст или загрузить .md/.txt/.json.'; return; }
+  el.className = 'hint ' + (n > DS_LIMIT ? 'warn' : 'ok');
+  el.textContent = n > DS_LIMIT
+    ? `${n.toLocaleString('ru')} символов — много: Gemini получит первые ${DS_LIMIT.toLocaleString('ru')}. Лучше сократить до главного.`
+    : `Учитывается в каждом запросе · ${n.toLocaleString('ru')} символов`;
+}
+$('ds').addEventListener('input', () => { lsSet('pg_ds', $('ds').value); dsUpdate(); });
+$('dsLoad').onclick = () => $('dsFile').click();
+$('dsFile').onchange = async () => {
+  const f = $('dsFile').files[0]; if(!f) return;
+  try{
+    const t = await f.text();
+    $('ds').value = ($('ds').value.trim() ? $('ds').value.trim() + '\n\n' : '') + `# ${f.name}\n` + t.trim();
+    lsSet('pg_ds', $('ds').value); dsUpdate();
+  }catch(e){ $('dsHint').className = 'hint bad'; $('dsHint').textContent = 'Не удалось прочитать файл: ' + e.message; }
+  $('dsFile').value = '';
+};
+$('dsClear').onclick = () => { $('ds').value = ''; lsSet('pg_ds', ''); dsUpdate(); };
+dsUpdate();
 
 const SYSTEM = `Ты — продуктовый дизайнер, который работает прямо в Pixso через инструменты MCP. Пользователь пишет по-русски, отвечай по-русски, кратко.
 
@@ -374,14 +416,23 @@ function geminiTools(){
     parametersJsonSchema: t.inputSchema && Object.keys(t.inputSchema).length ? t.inputSchema : {type:'object', properties:{}}
   }))}];
 }
+function dsBlock(){
+  const t = $('ds').value.trim();
+  if(!t) return '';
+  return '\n\n## Дизайн-система и стиль пользователя\n' +
+    'Соблюдай это описание во всём, что создаёшь и меняешь: цвета, шрифты, размеры, отступы, радиусы, компоненты, тон. ' +
+    'Если в файле уже есть стили, переменные или компоненты с подходящими значениями — используй их, а не создавай дубли. ' +
+    'Если описание расходится со стилями файла, приоритет у описания, пока пользователь не скажет иначе. Чего в описании нет — решай в том же духе.\n' +
+    '<<<\n' + t.slice(0, DS_LIMIT) + '\n>>>';
+}
 function systemText(){
   const f = parseLink();
-  if(!f) return SYSTEM;
+  if(!f) return SYSTEM + dsBlock();
   const where = f.item
     ? `Целевой фрейм: item-id=${f.item}. Если пользователь просит изменить — меняй этот фрейм. Если просит новое — собирай внутри него или рядом с ним.`
     : `Целевого фрейма нет: новые макеты создавай в этом файле${f.page ? ` на странице page-id=${f.page}` : ''} на свободном месте, не перекрывая существующие фреймы (сначала посмотри get_top_level_frames).`;
   return SYSTEM + `\n\nРабочий файл Pixso: ${f.raw}\nРаботай только в этом файле. ${where}\n` +
-    'Если пользователь вставил в сообщение другую ссылку на фрейм (item-id), работай с тем фреймом. В инструментах, где нужна ссылка или fileKey, передавай нужную ссылку.';
+    'Если пользователь вставил в сообщение другую ссылку на фрейм (item-id), работай с тем фреймом. В инструментах, где нужна ссылка или fileKey, передавай нужную ссылку.' + dsBlock();
 }
 const sleep = (ms, signal) => new Promise((res, rej) => {
   const t = setTimeout(res, ms);
